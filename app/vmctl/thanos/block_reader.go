@@ -2,6 +2,7 @@ package thanos
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -14,6 +15,9 @@ type BlockInfo struct {
 	Block      tsdb.BlockReader
 	Resolution ResolutionLevel
 	IsThanos   bool
+	// Closer releases the block's resources (file descriptors, mmap).
+	// Must be called only after all queriers on this block have been closed.
+	Closer io.Closer
 }
 
 // OpenBlocksWithInfo opens all blocks and returns them with their metadata.
@@ -50,6 +54,7 @@ func OpenBlocksWithInfo(snapshotDir string, aggrType AggrType) ([]BlockInfo, err
 				Block:      block,
 				Resolution: ResolutionRaw,
 				IsThanos:   false,
+				Closer:     block,
 			})
 			continue
 		}
@@ -69,8 +74,19 @@ func OpenBlocksWithInfo(snapshotDir string, aggrType AggrType) ([]BlockInfo, err
 			Block:      block,
 			Resolution: meta.Resolution(),
 			IsThanos:   true,
+			Closer:     block,
 		})
 	}
 
 	return blocks, nil
+}
+
+// CloseBlocks closes all blocks in the slice.
+// Must be called only after all queriers on these blocks have been closed.
+func CloseBlocks(blocks []BlockInfo) {
+	for _, bi := range blocks {
+		if bi.Closer != nil {
+			_ = bi.Closer.Close()
+		}
+	}
 }

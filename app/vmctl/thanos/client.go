@@ -48,12 +48,6 @@ func (f filter) inRange(minV, maxV int64) bool {
 	return minV <= fmax && fmin <= maxV
 }
 
-// BlockWithInfo wraps a BlockReader with resolution information.
-type BlockWithInfo struct {
-	Block      tsdb.BlockReader
-	Resolution ResolutionLevel
-}
-
 // NewClient creates a new Thanos snapshot client.
 func NewClient(cfg Config) (*Client, error) {
 	minTime, maxTime, err := parseTime(cfg.Filter.TimeMin, cfg.Filter.TimeMax)
@@ -74,7 +68,7 @@ func NewClient(cfg Config) (*Client, error) {
 // Explore fetches all available blocks from the snapshot with support for
 // Thanos AggrChunk (downsampled blocks). It opens blocks with a custom pool
 // that can decode AggrChunk encoding (0xff).
-func (c *Client) Explore(aggrType AggrType) ([]BlockWithInfo, error) {
+func (c *Client) Explore(aggrType AggrType) ([]BlockInfo, error) {
 	blockInfos, err := OpenBlocksWithInfo(c.snapshotPath, aggrType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open blocks: %w", err)
@@ -85,7 +79,7 @@ func (c *Client) Explore(aggrType AggrType) ([]BlockWithInfo, error) {
 		Blocks:   len(blockInfos),
 	}
 
-	var blocksToImport []BlockWithInfo
+	var blocksToImport []BlockInfo
 	for _, bi := range blockInfos {
 		meta := bi.Block.Meta()
 
@@ -103,10 +97,7 @@ func (c *Client) Explore(aggrType AggrType) ([]BlockWithInfo, error) {
 
 		s.Samples += meta.Stats.NumSamples
 		s.Series += meta.Stats.NumSeries
-		blocksToImport = append(blocksToImport, BlockWithInfo{
-			Block:      bi.Block,
-			Resolution: bi.Resolution,
-		})
+		blocksToImport = append(blocksToImport, bi)
 	}
 	if !c.statsPrinted {
 		fmt.Println(s)
@@ -115,8 +106,32 @@ func (c *Client) Explore(aggrType AggrType) ([]BlockWithInfo, error) {
 	return blocksToImport, nil
 }
 
-// Read reads the given BlockWithInfo according to configured time and label filters.
-func (c *Client) Read(bi BlockWithInfo) (storage.SeriesSet, error) {
+// querierSeriesSet wraps a SeriesSet and its underlying Querier, ensuring
+// the querier is closed once the SeriesSet has been fully consumed.
+// This releases the querier's read reference on the block, which is required
+// for Block.Close() to complete without hanging.
+type querierSeriesSet struct {
+	storage.SeriesSet
+	q      storage.Querier
+	closed bool
+}
+
+// Next advances the iterator. When the underlying SeriesSet is exhausted,
+// it closes the querier to release resources.
+func (s *querierSeriesSet) Next() bool {
+	if s.SeriesSet.Next() {
+		return true
+	}
+	if !s.closed {
+		_ = s.q.Close()
+		s.closed = true
+	}
+	return false
+}
+
+// Read reads the given BlockInfo according to configured time and label filters.
+// The returned SeriesSet automatically closes the underlying querier when fully consumed.
+func (c *Client) Read(bi BlockInfo) (storage.SeriesSet, error) {
 	minTime, maxTime := bi.Block.Meta().MinTime, bi.Block.Meta().MaxTime
 	if c.filter.min != 0 {
 		minTime = c.filter.min
@@ -128,8 +143,16 @@ func (c *Client) Read(bi BlockWithInfo) (storage.SeriesSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	ss := q.Select(context.Background(), false, nil, labels.MustNewMatcher(labels.MatchRegexp, c.filter.label, c.filter.labelValue))
-	return ss, nil
+	ss := q.Select(
+		context.Background(),
+		false,
+		nil,
+		labels.MustNewMatcher(labels.MatchRegexp, c.filter.label, c.filter.labelValue),
+	)
+	return &querierSeriesSet{
+		SeriesSet: ss,
+		q:         q,
+	}, nil
 }
 
 func parseTime(start, end string) (int64, int64, error) {
