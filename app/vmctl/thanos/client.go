@@ -39,7 +39,7 @@ type filter struct {
 
 func (f filter) inRange(minV, maxV int64) bool {
 	fmin, fmax := f.min, f.max
-	if minV == 0 {
+	if fmin == 0 {
 		fmin = minV
 	}
 	if fmax == 0 {

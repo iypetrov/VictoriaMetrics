@@ -208,9 +208,12 @@ func (tp *thanosProcessor) processBlocks(blocks []thanos.BlockInfo, aggrType tha
 		select {
 		case thanosErr := <-errCh:
 			close(blockReadersCh)
+			wg.Wait()
+			thanosErrorsTotal.Inc()
 			return processBlocksStats{}, fmt.Errorf("thanos error: %s", thanosErr)
 		case vmErr := <-tp.im.Errors():
 			close(blockReadersCh)
+			wg.Wait()
 			thanosErrorsTotal.Inc()
 			return processBlocksStats{}, fmt.Errorf("import process failed: %s", wrapErr(vmErr, tp.isVerbose))
 		case blockReadersCh <- bi:

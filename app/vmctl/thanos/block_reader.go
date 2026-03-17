@@ -42,21 +42,10 @@ func OpenBlocksWithInfo(snapshotDir string, aggrType AggrType) ([]BlockInfo, err
 			continue
 		}
 
-		// Read Thanos metadata to determine resolution
 		meta, err := ReadBlockMeta(blockDir)
 		if err != nil {
-			// If we can't read Thanos meta, treat as raw Prometheus block
-			block, err := tsdb.OpenBlock(nil, blockDir, nil, nil)
-			if err != nil {
-				return nil, fmt.Errorf("failed to open block %s: %w", blockDir, err)
-			}
-			blocks = append(blocks, BlockInfo{
-				Block:      block,
-				Resolution: ResolutionRaw,
-				IsThanos:   false,
-				Closer:     block,
-			})
-			continue
+			CloseBlocks(blocks)
+			return nil, fmt.Errorf("failed to read Thanos metadata for block %s: %w", blockDir, err)
 		}
 
 		var pool chunkenc.Pool
@@ -67,6 +56,8 @@ func OpenBlocksWithInfo(snapshotDir string, aggrType AggrType) ([]BlockInfo, err
 
 		block, err := tsdb.OpenBlock(nil, blockDir, pool, nil)
 		if err != nil {
+			// Close previously opened blocks before returning error
+			CloseBlocks(blocks)
 			return nil, fmt.Errorf("failed to open block %s: %w", blockDir, err)
 		}
 
